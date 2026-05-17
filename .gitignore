@@ -1,5 +1,16 @@
+# Python
+Backend/venv/
+Backend/__pycache__/
+
+# React
+frontend/node_modules/
+frontend/build/
+
+# VS Code / Visual Studio
 .vs/
-venv/
-__pycache__/
-node_modules/
+
+# Python cache
+*.pyc
+
+# Environment files
 .env

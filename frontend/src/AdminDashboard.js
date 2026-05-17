@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import API from './api';
 
@@ -13,11 +13,10 @@ function StatusBadge({ status }) {
 function AdminDashboard() {
   const [complaints, setComplaints] = useState([]);
   const [users, setUsers] = useState([]);
-  const [activeTab, setActiveTab] = useState('complaints');
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
 
-  const fetchAllComplaints = async () => {
+const fetchAllComplaints = useCallback(async () => {
     try {
       const res = await API.get('/admin/complaints');
       setComplaints(res.data);
@@ -27,7 +26,7 @@ function AdminDashboard() {
         navigate('/dashboard');
       }
     }
-  };
+  }, [navigate]);
 
   const fetchAllUsers = async () => {
     try {
@@ -39,8 +38,9 @@ function AdminDashboard() {
   };
 
   useEffect(() => {
-    Promise.all([fetchAllComplaints(), fetchAllUsers()]).finally(() => setLoading(false));
-  }, []);
+  Promise.all([fetchAllComplaints(), fetchAllUsers()])
+    .finally(() => setLoading(false));
+}, [fetchAllComplaints]);
 
   const handleStatusUpdate = async (id, newStatus) => {
     try {
@@ -61,16 +61,6 @@ function AdminDashboard() {
     }
   };
 
-  // NEW: Promote or demote user role
-  const handleRoleUpdate = async (userId, newRole) => {
-    try {
-      await API.put(`/admin/update-role/${userId}`, { role: newRole });
-      setUsers(users.map(u => u.id === userId ? { ...u, role: newRole } : u));
-    } catch (err) {
-      alert(err.response?.data?.message || 'Failed to update role.');
-    }
-  };
-
   if (loading) {
     return (
       <div className="loading-screen">
@@ -84,8 +74,6 @@ function AdminDashboard() {
     pending: complaints.filter(c => c.status === 'Pending').length,
     resolved: complaints.filter(c => c.status === 'Resolved').length,
   };
-
-  const currentAdminId = parseInt(localStorage.getItem('userId'));
 
   return (
     <div className="admin-page">
