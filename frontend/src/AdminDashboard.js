@@ -12,7 +12,7 @@ function StatusBadge({ status }) {
 
 function AdminDashboard() {
   const [complaints, setComplaints] = useState([]);
-  const [users, setUsers] = useState([]);
+  const [, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
 
