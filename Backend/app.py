@@ -6,12 +6,20 @@ from config import Config
 from models import db, User, Complaint, ComplaintLog
 from datetime import datetime
 import re
+import os
+from dotenv import load_dotenv
+
+load_dotenv()  # Load variables from .env
 
 app = Flask(__name__)
 CORS(app)
 
 # --- SECURITY CONFIGURATION ---
-app.config["JWT_SECRET_KEY"] = "secret-key-change-this"  # Change in production
+# JWT secret key loaded from environment — never hard-coded
+app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY")
+if not app.config["JWT_SECRET_KEY"]:
+    raise RuntimeError("JWT_SECRET_KEY is not set in environment variables")
+
 app.config['JWT_VERIFY_SUB'] = False
 jwt = JWTManager(app)
 app.config.from_object(Config)
@@ -19,14 +27,23 @@ app.config.from_object(Config)
 db.init_app(app)
 bcrypt = Bcrypt(app)
 
-@app.route('/')
-def home():
-    return "Complaint System API Running"
+
+# ── Helpers ─────────────────────────────────────────────────
+
+def sanitize_text(value: str) -> str:
+    """Strip leading/trailing whitespace and collapse internal runs of
+    whitespace to a single space. Returns a clean string."""
+    return re.sub(r'\s+', ' ', value.strip())
 
 
 # ============================================================
 # AUTHENTICATION & REGISTRATION
 # ============================================================
+
+@app.route('/')
+def home():
+    return "Complaint System API Running"
+
 
 @app.route('/register', methods=['POST'])
 def register():
@@ -57,7 +74,6 @@ def register():
     return jsonify({"message": "User registered successfully"})
 
 
-# NEW: Admin registration using a secret code
 @app.route('/register-admin', methods=['POST'])
 def register_admin():
     data = request.get_json()
@@ -66,8 +82,10 @@ def register_admin():
     password = data.get('password')
     admin_code = data.get('admin_code')
 
-    # Secret code to create admin accounts - change this in production
-    SECRET_ADMIN_CODE = "ADMIN2025"
+    # Admin registration code loaded from environment
+    SECRET_ADMIN_CODE = os.getenv("ADMIN_SECRET_CODE")
+    if not SECRET_ADMIN_CODE:
+        return jsonify({"message": "Admin registration is not configured"}), 500
 
     if admin_code != SECRET_ADMIN_CODE:
         return jsonify({"message": "Invalid admin registration code"}), 403
@@ -107,7 +125,7 @@ def login():
         return jsonify({
             "message": "Login successful",
             "token": token,
-            "role": user.role,        # Send role so frontend can route correctly
+            "role": user.role,
             "username": user.username
         })
 
@@ -140,16 +158,40 @@ def get_me():
 def submit_complaint():
     current_user = get_jwt_identity()
     data = request.get_json()
-    title = data.get('title')
-    description = data.get('description')
 
-    if not title or not description:
+    # ── 1. Accept only the expected fields ──────────────────
+    # Any extra keys in the payload (e.g. user_id, status, role) are silently
+    # ignored — the complaint is always created for the authenticated user
+    # and always starts with the default 'Pending' status.
+    raw_title = data.get('title')
+    raw_description = data.get('description')
+
+    if not raw_title or not raw_description:
         return jsonify({"message": "Title and description are required"}), 400
-    if len(title) > 200:
-        return jsonify({"message": "Title too long"}), 400
-    if len(description) > 1000:
-        return jsonify({"message": "Description too long"}), 400
 
+    # ── 2. Sanitize inputs ──────────────────────────────────
+    title = sanitize_text(str(raw_title))
+    description = sanitize_text(str(raw_description))
+
+    if len(title) == 0 or len(description) == 0:
+        return jsonify({"message": "Title and description cannot be blank"}), 400
+    if len(title) > 200:
+        return jsonify({"message": "Title too long (max 200 characters)"}), 400
+    if len(description) > 1000:
+        return jsonify({"message": "Description too long (max 1000 characters)"}), 400
+
+    # ── 3. Duplicate check ──────────────────────────────────
+    # Case-insensitive comparison so "My Issue" and "my issue" are treated as the same
+    existing = Complaint.query.filter(
+        Complaint.user_id == current_user,
+        db.func.lower(Complaint.title) == title.lower(),
+        db.func.lower(Complaint.description) == description.lower()
+    ).first()
+
+    if existing:
+        return jsonify({"message": "You have already submitted this complaint"}), 409
+
+    # ── 4. Persist ──────────────────────────────────────────
     new_complaint = Complaint(title=title, description=description, user_id=current_user)
     db.session.add(new_complaint)
     db.session.commit()
@@ -157,7 +199,6 @@ def submit_complaint():
     return jsonify({"message": "Complaint submitted successfully"})
 
 
-# FIX: Was calling /complaints on frontend but route was /my-complaints
 @app.route('/my-complaints', methods=['GET'])
 @jwt_required()
 def get_my_complaints():
@@ -172,7 +213,6 @@ def get_my_complaints():
     return jsonify(complaint_list)
 
 
-# NEW: Delete own complaint
 @app.route('/delete-complaint/<int:complaint_id>', methods=['DELETE'])
 @jwt_required()
 def delete_complaint(complaint_id):
@@ -182,11 +222,9 @@ def delete_complaint(complaint_id):
     if not complaint:
         return jsonify({"message": "Complaint not found"}), 404
 
-    # Users can only delete their own complaints
     if str(complaint.user_id) != str(current_user):
         return jsonify({"message": "Unauthorized: You can only delete your own complaints"}), 403
 
-    # Delete related logs first to avoid foreign key constraint error
     ComplaintLog.query.filter_by(complaint_id=complaint_id).delete()
     db.session.delete(complaint)
     db.session.commit()
@@ -256,7 +294,6 @@ def update_complaint_status(complaint_id):
     return jsonify({"message": "Complaint status updated successfully"})
 
 
-# Admin can delete any complaint
 @app.route('/admin/delete-complaint/<int:complaint_id>', methods=['DELETE'])
 @jwt_required()
 def admin_delete_complaint(complaint_id):
@@ -269,7 +306,6 @@ def admin_delete_complaint(complaint_id):
     if not complaint:
         return jsonify({"message": "Complaint not found"}), 404
 
-    # Delete related logs first to avoid foreign key errors
     ComplaintLog.query.filter_by(complaint_id=complaint_id).delete()
     db.session.delete(complaint)
     db.session.commit()
@@ -277,7 +313,6 @@ def admin_delete_complaint(complaint_id):
     return jsonify({"message": "Complaint deleted successfully"})
 
 
-# NEW: Admin can view all users and promote/demote them
 @app.route('/admin/users', methods=['GET'])
 @jwt_required()
 def get_all_users():
@@ -296,7 +331,6 @@ def get_all_users():
     return jsonify(user_list)
 
 
-# NEW: Admin can promote or demote users
 @app.route('/admin/update-role/<int:user_id>', methods=['PUT'])
 @jwt_required()
 def update_user_role(user_id):
@@ -309,7 +343,6 @@ def update_user_role(user_id):
     if not target_user:
         return jsonify({"message": "User not found"}), 404
 
-    # Prevent admin from demoting themselves
     if str(target_user.id) == str(current_user):
         return jsonify({"message": "Cannot change your own role"}), 400
 
